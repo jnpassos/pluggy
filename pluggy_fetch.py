@@ -74,7 +74,11 @@ class PluggyClient:
     # ===== CONECTORES / BANCOS =====
     def fetch_connectors(self) -> list:
         """Lista todos os conectores/bancos disponíveis."""
-        return self._get("/connectors")
+        # /connectors pode retornar lista direta ou paginado
+        data = self._get("/connectors")
+        if isinstance(data, dict) and "results" in data:
+            return data["results"]
+        return data if isinstance(data, list) else []
 
     # ===== ITENS (CONEXÕES) =====
     def fetch_items(self) -> list:
