@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""
+Pluggy Data Fetcher - Lista contas, bancos, cartões de crédito e transações.
+Todas as credenciais via variáveis de ambiente.
+"""
+
+import argparse
+import json
+import os
+import sys
+from dataclasses import dataclass
+
+import requests
+
+
+@dataclass
+class Config:
+    api_key: str
+    base_url: str = "https://api.pluggy.ai"
+    timeout: int = 30
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        api_key = os.getenv("PLUGGY_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "PLUGGY_API_KEY não definida. "
+                "Defina: export PLUGGY_API_KEY='sua_key'"
+            )
+        return cls(api_key=api_key)
+
+
+class PluggyClient:
+    def __init__(self, config: Config):
+        self.config = config
+        self.session = requests.Session()
+        self.session.headers.update({
+            "X-API-KEY": config.api_key,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
+        self.session.timeout = config.timeout
+
+    def _get(self, endpoint: str, params: dict | None = None) -> dict:
+        url = f"{self.config.base_url}{endpoint}"
+        resp = self.session.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _get_all_pages(self, endpoint: str, params: dict | None = None,
+                       page_size: int = 500) -> list:
+        """Busca todos os resultados paginados."""
+        all_results = []
+        page = 1
+        params = params or {}
+
+        while True:
+            page_params = {**params, "page": page, "pageSize": page_size}
+            data = self._get(endpoint, page_params)
+            results = data.get("results", [])
+            all_results.extend(results)
+
+            if len(results) < page_size:
+                break
+            page += 1
+
+        return all_results
+
+    # ===== CONECTORES / BANCOS =====
+    def fetch_connectors(self) -> list:
+        """Lista todos os conectores/bancos disponíveis."""
+        return self._get("/connectors")
+
+    # ===== ITENS (CONEXÕES) =====
+    def fetch_items(self) -> list:
+        """Lista todos os itens (conexões do usuário)."""
+        return self._get_all_pages("/items")
+
+    def fetch_item(self, item_id: str) -> dict:
+        """Busca detalhes de um item específico."""
+        return self._get(f"/items/{item_id}")
+
+    # ===== CONTAS =====
+    def fetch_accounts(self, item_id: str) -> list:
+        """Lista contas de um item."""
+        return self._get_all_pages("/accounts", {"itemId": item_id})
+
+    def fetch_account(self, account_id: str) -> dict:
+        """Busca detalhes de uma conta específica."""
+        return self._get(f"/accounts/{account_id}")
+
+    # ===== TRANSAÇÕES =====
+    def fetch_transactions(self, item_id: str,
+                           from_date: str | None = None,
+                           to_date: str | None = None,
+                           transaction_type: str | None = None) -> list:
+        """Busca transações de um item com filtros opcionais."""
+        params = {"itemId": item_id}
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        if transaction_type:
+            params["type"] = transaction_type
+        return self._get_all_pages("/transactions", params)
+
+    def fetch_transaction(self, transaction_id: str) -> dict:
+        return self._get(f"/transactions/{transaction_id}")
+
+    # ===== INVESTIMENTOS =====
+    def fetch_investments(self, item_id: str) -> list:
+        return self._get_all_pages("/investments", {"itemId": item_id})
+
+    # ===== EMPRÉSTIMOS =====
+    def fetch_loans(self, item_id: str) -> list:
+        return self._get_all_pages("/loans", {"itemId": item_id})
+
+    # ===== FATURAS CARTÃO =====
+    def fetch_bills(self, item_id: str) -> list:
+        return self._get_all_pages("/bills", {"itemId": item_id})
+
+
+def print_json(data, indent=2):
+    print(json.dumps(data, indent=indent, ensure_ascii=False, default=str))
+
+
+def print_summary(label: str, data: list, key_fields: list | None = None):
+    print(f"\n{'='*60}")
+    print(f"{label}: {len(data)} itens")
+    print(f"{'='*60}")
+    if not data:
+        print("  (vazio)")
+        return
+
+    if key_fields:
+        for item in data[:10]:  # mostra só primeiros 10
+            parts = [f"{k}={item.get(k, 'N/A')}" for k in key_fields]
+            print(f"  - {' | '.join(parts)}")
+        if len(data) > 10:
+            print(f"  ... e mais {len(data) - 10} itens")
+    else:
+        print_json(data[:3])
+        if len(data) > 3:
+            print(f"  ... (total: {len(data)})")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Pluggy Data Fetcher")
+    parser.add_argument("--item-id", help="Item ID específico (pula listagem de itens)")
+    parser.add_argument("--from-date", help="Data inicial (YYYY-MM-DD)")
+    parser.add_argument("--to-date", help="Data final (YYYY-MM-DD)")
+    parser.add_argument("--type", choices=["CREDIT", "DEBIT", "PIX", "TED", "DOC", "BOLETO"],
+                        help="Filtrar tipo de transação")
+    parser.add_argument("--only", choices=["connectors", "items", "accounts", "transactions", "all"],
+                        default="all", help="O que buscar")
+    parser.add_argument("--output", help="Arquivo JSON de saída")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Menos output")
+    args = parser.parse_args()
+
+    try:
+        config = Config.from_env()
+    except ValueError as e:
+        print(f"❌ Erro: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    client = PluggyClient(config)
+    all_data = {}
+
+    try:
+        # 1. CONECTORES / BANCOS
+        if args.only in ("connectors", "all"):
+            if not args.quiet:
+                print("\n🔌 Buscando conectores/bancos...")
+            connectors = client.fetch_connectors()
+            all_data["connectors"] = connectors
+            if not args.quiet:
+                print_summary("Conectores", connectors, ["id", "name", "type", "country"])
+
+        # 2. ITENS
+        if args.only in ("items", "all"):
+            if not args.quiet:
+                print("\n📦 Buscando itens (conexões)...")
+            items = client.fetch_items()
+            all_data["items"] = items
+            if not args.quiet:
+                print_summary("Itens", items, ["id", "name", "connectorId", "status", "updatedAt"])
+
+        # Se item-id não foi passado, usa o primeiro item disponível
+        target_item_id = args.item_id
+        if not target_item_id and all_data.get("items"):
+            target_item_id = all_data["items"][0]["id"]
+            if not args.quiet:
+                print(f"\n📌 Usando primeiro item: {target_item_id}")
+
+        if target_item_id:
+            # 3. CONTAS
+            if args.only in ("accounts", "all"):
+                if not args.quiet:
+                    print(f"\n🏦 Buscando contas do item {target_item_id}...")
+                accounts = client.fetch_accounts(target_item_id)
+                all_data["accounts"] = accounts
+                if not args.quiet:
+                    print_summary("Contas", accounts,
+                                  ["id", "name", "type", "subtype", "balance", "currency"])
+
+            # Separar contas por tipo
+            credit_accounts = [a for a in all_data.get("accounts", [])
+                               if a.get("type") in ("CREDIT_CARD", "CREDIT")]
+            _ = [a for a in all_data.get("accounts", [])
+                 if a.get("type") in ("CHECKING", "SAVINGS")]
+
+            if not args.quiet and credit_accounts:
+                print_summary("Cartões de Crédito", credit_accounts,
+                              ["id", "name", "balance", "currency", "creditLimit"])
+
+            # 4. TRANSAÇÕES
+            if args.only in ("transactions", "all"):
+                if not args.quiet:
+                    print(f"\n💳 Buscando transações do item {target_item_id}...")
+                transactions = client.fetch_transactions(
+                    target_item_id,
+                    from_date=args.from_date,
+                    to_date=args.to_date,
+                    transaction_type=args.type
+                )
+                all_data["transactions"] = transactions
+                if not args.quiet:
+                    print_summary("Transações", transactions,
+                                  ["id", "description", "amount", "currency", "date", "type"])
+
+                # Resumo financeiro
+                if transactions and not args.quiet:
+                    total_credit = sum(t.get("amount", 0) for t in transactions if t.get("amount", 0) > 0)
+                    total_debit = sum(t.get("amount", 0) for t in transactions if t.get("amount", 0) < 0)
+                    print(f"\n💰 Resumo: Créditos: {total_credit:.2f} | Débitos: {total_debit:.2f} | Líquido: {total_credit + total_debit:.2f}")
+
+            # 5. INVESTIMENTOS (extra)
+            if args.only == "all":
+                if not args.quiet:
+                    print("\n📈 Buscando investimentos...")
+                investments = client.fetch_investments(target_item_id)
+                all_data["investments"] = investments
+                if not args.quiet:
+                    print_summary("Investimentos", investments,
+                                  ["id", "name", "type", "amount", "currency"])
+
+            # 6. EMPRÉSTIMOS (extra)
+            if args.only == "all":
+                if not args.quiet:
+                    print("\n🏦 Buscando empréstimos...")
+                loans = client.fetch_loans(target_item_id)
+                all_data["loans"] = loans
+                if not args.quiet:
+                    print_summary("Empréstimos", loans,
+                                  ["id", "name", "type", "outstandingBalance", "currency"])
+
+            # 7. FATURAS CARTÃO (extra)
+            if args.only == "all":
+                if not args.quiet:
+                    print("\n🧾 Buscando faturas cartão...")
+                bills = client.fetch_bills(target_item_id)
+                all_data["bills"] = bills
+                if not args.quiet:
+                    print_summary("Faturas", bills,
+                                  ["id", "accountId", "totalAmount", "currency", "dueDate", "status"])
+
+    except requests.HTTPError as e:
+        print(f"❌ Erro HTTP {e.response.status_code}: {e.response.text}", file=sys.stderr)
+        sys.exit(1)
+    except (requests.RequestException, ValueError, KeyError, OSError) as e:
+        print(f"❌ Erro: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Salva arquivo se solicitado
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(all_data, f, indent=2, ensure_ascii=False, default=str)
+        if not args.quiet:
+            print(f"\n💾 Dados salvos em: {args.output}")
+
+    if not args.quiet:
+        print("\n✅ Concluído!")
+
+
+if __name__ == "__main__":
+    main()
