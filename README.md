@@ -12,13 +12,11 @@ Python script para buscar dados do Pluggy Open Finance API:
 ## Instalação
 
 ```bash
-# Com uv (recomendado)
-uv venv .venv
-source .venv/bin/activate
-uv pip install requests
+# Com uv (recomendado) - cria venv e instala deps automaticamente
+uv sync
 
-# Ou com pip
-pip install requests
+# Ou para rodar direto sem ativar venv
+uv run python pluggy_fetch.py --help
 ```
 
 ## Configuração
@@ -30,23 +28,27 @@ export PLUGGY_API_KEY="sua_api_key_aqui"
 ## Uso
 
 ```bash
-# Busca tudo do primeiro item encontrado
-python pluggy_fetch.py
+# Com uv (recomendado) - roda direto, gerencia venv automaticamente
+uv run python pluggy_fetch.py
 
 # Busca de um item específico
-python pluggy_fetch.py --item-id 2f5330c9-afbc-4241-9715-bbc936666222
+uv run python pluggy_fetch.py --item-id 2f5330c9-afbc-4241-9715-bbc936666222
 
 # Apenas contas
-python pluggy_fetch.py --only accounts
+uv run python pluggy_fetch.py --only accounts
 
 # Transações de 2024
-python pluggy_fetch.py --only transactions --from-date 2024-01-01 --to-date 2024-12-31
+uv run python pluggy_fetch.py --only transactions --from-date 2024-01-01 --to-date 2024-12-31
 
 # Salva em JSON
-python pluggy_fetch.py --output dados.json
+uv run python pluggy_fetch.py --output dados.json
 
 # Modo silencioso
-python pluggy_fetch.py -q
+uv run python pluggy_fetch.py -q
+
+# Lint e formatação
+uv run ruff check pluggy_fetch.py
+uv run ruff format pluggy_fetch.py
 ```
 
 ## Argumentos

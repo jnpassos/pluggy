@@ -23,10 +23,7 @@ class Config:
     def from_env(cls) -> "Config":
         api_key = os.getenv("PLUGGY_API_KEY")
         if not api_key:
-            raise ValueError(
-                "PLUGGY_API_KEY não definida. "
-                "Defina: export PLUGGY_API_KEY='sua_key'"
-            )
+            raise ValueError("PLUGGY_API_KEY não definida. Defina: export PLUGGY_API_KEY='sua_key'")
         return cls(api_key=api_key)
 
 
@@ -34,11 +31,13 @@ class PluggyClient:
     def __init__(self, config: Config):
         self.config = config
         self.session = requests.Session()
-        self.session.headers.update({
-            "X-API-KEY": config.api_key,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        })
+        self.session.headers.update(
+            {
+                "X-API-KEY": config.api_key,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+        )
         self.session.timeout = config.timeout
 
     def _get(self, endpoint: str, params: dict | None = None) -> dict:
@@ -47,8 +46,9 @@ class PluggyClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _get_all_pages(self, endpoint: str, params: dict | None = None,
-                       page_size: int = 500) -> list:
+    def _get_all_pages(
+        self, endpoint: str, params: dict | None = None, page_size: int = 500
+    ) -> list:
         """Busca todos os resultados paginados."""
         all_results = []
         page = 1
@@ -90,10 +90,13 @@ class PluggyClient:
         return self._get(f"/accounts/{account_id}")
 
     # ===== TRANSAÇÕES =====
-    def fetch_transactions(self, item_id: str,
-                           from_date: str | None = None,
-                           to_date: str | None = None,
-                           transaction_type: str | None = None) -> list:
+    def fetch_transactions(
+        self,
+        item_id: str,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        transaction_type: str | None = None,
+    ) -> list:
         """Busca transações de um item com filtros opcionais."""
         params = {"itemId": item_id}
         if from_date:
@@ -125,9 +128,9 @@ def print_json(data, indent=2):
 
 
 def print_summary(label: str, data: list, key_fields: list | None = None):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"{label}: {len(data)} itens")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     if not data:
         print("  (vazio)")
         return
@@ -149,10 +152,17 @@ def main():
     parser.add_argument("--item-id", help="Item ID específico (pula listagem de itens)")
     parser.add_argument("--from-date", help="Data inicial (YYYY-MM-DD)")
     parser.add_argument("--to-date", help="Data final (YYYY-MM-DD)")
-    parser.add_argument("--type", choices=["CREDIT", "DEBIT", "PIX", "TED", "DOC", "BOLETO"],
-                        help="Filtrar tipo de transação")
-    parser.add_argument("--only", choices=["connectors", "items", "accounts", "transactions", "all"],
-                        default="all", help="O que buscar")
+    parser.add_argument(
+        "--type",
+        choices=["CREDIT", "DEBIT", "PIX", "TED", "DOC", "BOLETO"],
+        help="Filtrar tipo de transação",
+    )
+    parser.add_argument(
+        "--only",
+        choices=["connectors", "items", "accounts", "transactions", "all"],
+        default="all",
+        help="O que buscar",
+    )
     parser.add_argument("--output", help="Arquivo JSON de saída")
     parser.add_argument("--quiet", "-q", action="store_true", help="Menos output")
     args = parser.parse_args()
@@ -200,18 +210,26 @@ def main():
                 accounts = client.fetch_accounts(target_item_id)
                 all_data["accounts"] = accounts
                 if not args.quiet:
-                    print_summary("Contas", accounts,
-                                  ["id", "name", "type", "subtype", "balance", "currency"])
+                    print_summary(
+                        "Contas", accounts, ["id", "name", "type", "subtype", "balance", "currency"]
+                    )
 
             # Separar contas por tipo
-            credit_accounts = [a for a in all_data.get("accounts", [])
-                               if a.get("type") in ("CREDIT_CARD", "CREDIT")]
-            _ = [a for a in all_data.get("accounts", [])
-                 if a.get("type") in ("CHECKING", "SAVINGS")]
+            credit_accounts = [
+                a
+                for a in all_data.get("accounts", [])
+                if a.get("type") in ("CREDIT_CARD", "CREDIT")
+            ]
+            _ = [
+                a for a in all_data.get("accounts", []) if a.get("type") in ("CHECKING", "SAVINGS")
+            ]
 
             if not args.quiet and credit_accounts:
-                print_summary("Cartões de Crédito", credit_accounts,
-                              ["id", "name", "balance", "currency", "creditLimit"])
+                print_summary(
+                    "Cartões de Crédito",
+                    credit_accounts,
+                    ["id", "name", "balance", "currency", "creditLimit"],
+                )
 
             # 4. TRANSAÇÕES
             if args.only in ("transactions", "all"):
@@ -221,18 +239,29 @@ def main():
                     target_item_id,
                     from_date=args.from_date,
                     to_date=args.to_date,
-                    transaction_type=args.type
+                    transaction_type=args.type,
                 )
                 all_data["transactions"] = transactions
                 if not args.quiet:
-                    print_summary("Transações", transactions,
-                                  ["id", "description", "amount", "currency", "date", "type"])
+                    print_summary(
+                        "Transações",
+                        transactions,
+                        ["id", "description", "amount", "currency", "date", "type"],
+                    )
 
                 # Resumo financeiro
                 if transactions and not args.quiet:
-                    total_credit = sum(t.get("amount", 0) for t in transactions if t.get("amount", 0) > 0)
-                    total_debit = sum(t.get("amount", 0) for t in transactions if t.get("amount", 0) < 0)
-                    print(f"\n💰 Resumo: Créditos: {total_credit:.2f} | Débitos: {total_debit:.2f} | Líquido: {total_credit + total_debit:.2f}")
+                    total_credit = sum(
+                        t.get("amount", 0) for t in transactions if t.get("amount", 0) > 0
+                    )
+                    total_debit = sum(
+                        t.get("amount", 0) for t in transactions if t.get("amount", 0) < 0
+                    )
+                    net = total_credit + total_debit
+                    print(
+                        f"\n💰 Resumo: Créditos: {total_credit:.2f} | "
+                        f"Débitos: {total_debit:.2f} | Líquido: {net:.2f}"
+                    )
 
             # 5. INVESTIMENTOS (extra)
             if args.only == "all":
@@ -241,8 +270,9 @@ def main():
                 investments = client.fetch_investments(target_item_id)
                 all_data["investments"] = investments
                 if not args.quiet:
-                    print_summary("Investimentos", investments,
-                                  ["id", "name", "type", "amount", "currency"])
+                    print_summary(
+                        "Investimentos", investments, ["id", "name", "type", "amount", "currency"]
+                    )
 
             # 6. EMPRÉSTIMOS (extra)
             if args.only == "all":
@@ -251,8 +281,11 @@ def main():
                 loans = client.fetch_loans(target_item_id)
                 all_data["loans"] = loans
                 if not args.quiet:
-                    print_summary("Empréstimos", loans,
-                                  ["id", "name", "type", "outstandingBalance", "currency"])
+                    print_summary(
+                        "Empréstimos",
+                        loans,
+                        ["id", "name", "type", "outstandingBalance", "currency"],
+                    )
 
             # 7. FATURAS CARTÃO (extra)
             if args.only == "all":
@@ -261,8 +294,11 @@ def main():
                 bills = client.fetch_bills(target_item_id)
                 all_data["bills"] = bills
                 if not args.quiet:
-                    print_summary("Faturas", bills,
-                                  ["id", "accountId", "totalAmount", "currency", "dueDate", "status"])
+                    print_summary(
+                        "Faturas",
+                        bills,
+                        ["id", "accountId", "totalAmount", "currency", "dueDate", "status"],
+                    )
 
     except requests.HTTPError as e:
         print(f"❌ Erro HTTP {e.response.status_code}: {e.response.text}", file=sys.stderr)
