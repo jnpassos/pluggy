@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pluggy Data Fetcher - Lista contas, bancos, cartões de crédito e transações.
-Todas as credenciais via variáveis de ambiente.
+Todas as credenciais via variáveis de ambiente (.env ou export).
 """
 
 import argparse
@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass
 
 import requests
+from dotenv import load_dotenv
 
 
 @dataclass
@@ -21,9 +22,13 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        # Carrega .env automaticamente se existir
+        load_dotenv()
         api_key = os.getenv("PLUGGY_API_KEY")
         if not api_key:
-            raise ValueError("PLUGGY_API_KEY não definida. Defina: export PLUGGY_API_KEY='sua_key'")
+            raise ValueError(
+                "PLUGGY_API_KEY não definida. Defina no .env ou: export PLUGGY_API_KEY='sua_key'"
+            )
         return cls(api_key=api_key)
 
 
