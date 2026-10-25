@@ -147,9 +147,24 @@ def print_summary(label: str, data: list, key_fields: list | None = None):
             print(f"  ... (total: {len(data)})")
 
 
+def load_items_map(items_file: str = "items.json") -> dict:
+    """Carrega mapeamento name -> item_id do arquivo items.json."""
+    try:
+        with open(items_file, encoding="utf-8") as f:
+            items = json.load(f)
+        return {
+            item["name"].lower(): item["item_id"]
+            for item in items
+            if "name" in item and "item_id" in item
+        }
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return {}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Pluggy Data Fetcher")
     parser.add_argument("--item-id", help="Item ID específico (pula listagem de itens)")
+    parser.add_argument("--item-name", help="Nome do banco (ex: Nubank, Itaú) - usa items.json")
     parser.add_argument("--from-date", help="Data inicial (YYYY-MM-DD)")
     parser.add_argument("--to-date", help="Data final (YYYY-MM-DD)")
     parser.add_argument(
@@ -166,6 +181,22 @@ def main():
     parser.add_argument("--output", help="Arquivo JSON de saída")
     parser.add_argument("--quiet", "-q", action="store_true", help="Menos output")
     args = parser.parse_args()
+
+    # Carrega mapeamento de nomes
+    items_map = load_items_map()
+
+    # Resolve --item-name para item_id
+    if args.item_name:
+        name_lower = args.item_name.lower()
+        if name_lower in items_map:
+            args.item_id = items_map[name_lower]
+            if not args.quiet:
+                print(f"📌 Item resolvido: {args.item_name} -> {args.item_id}")
+        else:
+            available = ", ".join(sorted(items_map.keys()))
+            print(f"❌ Nome '{args.item_name}' não encontrado em items.json", file=sys.stderr)
+            print(f"   Disponíveis: {available}", file=sys.stderr)
+            sys.exit(1)
 
     try:
         config = Config.from_env()
