@@ -5,9 +5,11 @@ Todas as credenciais via variáveis de ambiente (.env ou export).
 """
 
 import argparse
+import base64
 import csv
 import json
 import os
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -40,7 +42,7 @@ class Config:
 
 
 class TokenManager:
-    """Gerencia token JWT com renovação automática antes da expiração."""
+    """Gerencia token JWT com renovação baseada no claim 'exp'."""
 
     def __init__(self, client_id: str, client_secret: str):
         self.client_id = client_id
@@ -48,15 +50,26 @@ class TokenManager:
         self._api_key: str | None = None
         self._expires_at: float = 0
 
+    def _decode_jwt_payload(self, token: str) -> dict:
+        """Decodifica payload do JWT (sem verificação de assinatura)."""
+        try:
+            payload_b64 = token.split(".")[1]
+            # Padding para base64url
+            padding = "=" * (-len(payload_b64) % 4)
+            payload_json = base64.urlsafe_b64decode(payload_b64 + padding)
+            return json.loads(payload_json)
+        except Exception:
+            return {}
+
     def get_api_key(self) -> str:
-        """Retorna API key válida, renovando se necessário (5 min antes)."""
+        """Retorna API key válida, renovando se necessário (5 min antes do exp)."""
         buffer = 5 * 60  # 5 minutos
         if not self._api_key or time.time() > self._expires_at - buffer:
             self._refresh_token()
         return self._api_key
 
     def _refresh_token(self) -> None:
-        """Renova token via endpoint /auth."""
+        """Renova token via endpoint /auth e extrai exp do JWT."""
         resp = requests.post(
             "https://api.pluggy.ai/auth",
             json={"clientId": self.client_id, "clientSecret": self.client_secret},
@@ -65,8 +78,15 @@ class TokenManager:
         resp.raise_for_status()
         data = resp.json()
         self._api_key = data["apiKey"]
-        # JWT expira em 2h = 7200s
-        self._expires_at = time.time() + 7200
+
+        # Extrai expiração real do JWT
+        payload = self._decode_jwt_payload(self._api_key)
+        exp = payload.get("exp")
+        if exp:
+            self._expires_at = exp
+        else:
+            # Fallback: 2h padrão
+            self._expires_at = time.time() + 7200
 
 
 class CacheManager:
@@ -128,7 +148,7 @@ class PluggyClient:
     def _request_with_retry(
         self, method: str, url: str, params: dict | None = None, **kwargs
     ) -> requests.Response:
-        """Faz requisição com retry exponencial para 429 e 5xx."""
+        """Faz requisição com retry exponencial + jitter para 429, 5xx e auto-refresh em 401."""
         last_exception = None
 
         for attempt in range(self.config.max_retries + 1):
@@ -147,13 +167,19 @@ class PluggyClient:
                     retry_after = int(resp.headers.get("Retry-After", "1"))
                     if attempt < self.config.max_retries:
                         wait = retry_after * (2**attempt) * self.config.backoff_factor
+                        wait += random.uniform(0, 0.5)  # jitter
                         time.sleep(wait)
                         continue
 
-                # Server errors (5xx) - retry com backoff
+                # 401 - token pode ter expirado, forçar refresh e tentar UMA vez
+                if resp.status_code == 401 and attempt == 0:
+                    self.token_manager._refresh_token()
+                    continue
+
+                # Server errors (5xx) - retry com backoff + jitter
                 if 500 <= resp.status_code < 600:
                     if attempt < self.config.max_retries:
-                        wait = self.config.backoff_factor * (2**attempt)
+                        wait = self.config.backoff_factor * (2**attempt) + random.uniform(0, 1)
                         time.sleep(wait)
                         continue
 
@@ -163,7 +189,7 @@ class PluggyClient:
             except requests.RequestException as e:
                 last_exception = e
                 if attempt < self.config.max_retries:
-                    wait = self.config.backoff_factor * (2**attempt)
+                    wait = self.config.backoff_factor * (2**attempt) + random.uniform(0, 1)
                     time.sleep(wait)
                     continue
                 raise
@@ -271,6 +297,7 @@ class PluggyClient:
         filtra client-side se necessário.
         O campo 'next' retorna uma query string completa
         (ex: ?accountId=...&after=...).
+        Filtra por 'type' (DEBIT/CREDIT) OU 'operationType' (PIX, TED, DOC, BOLETO, etc).
         """
         all_results = []
         next_url = None
@@ -302,7 +329,9 @@ class PluggyClient:
                     continue
                 if transaction_type:
                     tx_type = tx.get("type", "")
-                    if tx_type != transaction_type:
+                    tx_op_type = tx.get("operationType", "")
+                    # Aceita match em type OU operationType
+                    if tx_type != transaction_type and tx_op_type != transaction_type:
                         continue
                 filtered.append(tx)
             return filtered
@@ -438,7 +467,18 @@ def write_output(data: dict, output_file: str, format: str = "json"):
 
             transactions = data.get("transactions") or data.get("transactions_all", {}).get("transactions", [])
             if transactions:
-                table = pa.Table.from_pylist(transactions)
+                # Normalizar dados aninhados (paymentData, merchant, etc.)
+                flat_transactions = []
+                for tx in transactions:
+                    flat_tx = {}
+                    for k, v in tx.items():
+                        if isinstance(v, (dict, list)):
+                            flat_tx[k] = json.dumps(v, ensure_ascii=False)
+                        else:
+                            flat_tx[k] = v
+                    flat_transactions.append(flat_tx)
+
+                table = pa.Table.from_pylist(flat_transactions)
                 pq.write_table(table, output_file)
             else:
                 # Fallback
@@ -473,11 +513,11 @@ def main():
     parser.add_argument(
         "--type",
         choices=["CREDIT", "DEBIT", "PIX", "TED", "DOC", "BOLETO"],
-        help="Filtrar tipo de transação",
+        help="Filtrar tipo de transação (type ou operationType)",
     )
     parser.add_argument(
         "--only",
-        choices=["connectors", "items", "accounts", "transactions", "all"],
+        choices=["connectors", "items", "accounts", "transactions", "investments", "loans", "bills", "all"],
         default="all",
         help="O que buscar",
     )
@@ -568,14 +608,22 @@ def main():
             if not args.quiet:
                 print_summary("Conectores", connectors, ["id", "name", "type", "country"])
 
-        # 2. ITENS
-        if args.only in ("items", "all"):
+        # 2. ITENS - só busca se NÃO temos item_id explícito
+        if args.only in ("items", "all") and not args.item_id:
             if not args.quiet:
                 print("\n📦 Buscando itens (conexões)...")
-            items = client.fetch_items()
-            all_data["items"] = items
-            if not args.quiet:
-                print_summary("Itens", items, ["id", "name", "connectorId", "status", "updatedAt"])
+            try:
+                items = client.fetch_items()
+                all_data["items"] = items
+                if not args.quiet:
+                    print_summary("Itens", items, ["id", "name", "connectorId", "status", "updatedAt"])
+            except requests.HTTPError as e:
+                if e.response.status_code == 401 and args.item_name:
+                    # Esperado para contas pessoais - já temos item_id via items.json
+                    if not args.quiet:
+                        print("  ℹ️  /items retorna 401 para contas pessoais (usando items.json)")
+                else:
+                    raise
 
         target_item_id = args.item_id
         if not target_item_id and all_data.get("items"):
@@ -584,13 +632,14 @@ def main():
                 print(f"\n📌 Usando primeiro item: {target_item_id}")
 
         if target_item_id:
-            # 3. CONTAS
-            if args.only in ("accounts", "all"):
+            # 3. CONTAS - busca se necessário para outras operações
+            needs_accounts = args.only in ("accounts", "transactions", "investments", "loans", "bills", "all")
+            if needs_accounts:
                 if not args.quiet:
                     print(f"\n🏦 Buscando contas do item {target_item_id}...")
                 accounts = client.fetch_accounts(target_item_id, use_cache=use_cache)
                 all_data["accounts"] = accounts
-                if not args.quiet:
+                if not args.quiet and args.only in ("accounts", "all"):
                     print_summary(
                         "Contas", accounts, ["id", "name", "type", "subtype", "balance", "currency"]
                     )
@@ -600,7 +649,7 @@ def main():
             ]
             _ = [a for a in all_data.get("accounts", []) if a.get("type") in ("CHECKING", "SAVINGS")]
 
-            if not args.quiet and credit_accounts:
+            if not args.quiet and credit_accounts and args.only in ("accounts", "all"):
                 print_summary(
                     "Cartões de Crédito",
                     credit_accounts,
@@ -611,7 +660,7 @@ def main():
             if args.only in ("transactions", "all"):
                 if not args.quiet:
                     print(f"\n💳 Buscando transações do item {target_item_id}...")
-                accounts = client.fetch_accounts(target_item_id, use_cache=use_cache)
+                accounts = all_data.get("accounts", [])
                 all_transactions = []
                 for account in accounts:
                     account_id = account.get("id")
@@ -658,7 +707,7 @@ def main():
                     )
 
             # 5. INVESTIMENTOS
-            if args.only == "all":
+            if args.only in ("investments", "all"):
                 if not args.quiet:
                     print("\n📈 Buscando investimentos...")
                 investments = client.fetch_investments(target_item_id)
@@ -669,7 +718,7 @@ def main():
                     )
 
             # 6. EMPRÉSTIMOS
-            if args.only == "all":
+            if args.only in ("loans", "all"):
                 if not args.quiet:
                     print("\n🏦 Buscando empréstimos...")
                 loans = client.fetch_loans(target_item_id)
@@ -682,7 +731,7 @@ def main():
                     )
 
             # 7. FATURAS CARTÃO
-            if args.only == "all":
+            if args.only in ("bills", "all"):
                 if not args.quiet:
                     print("\n🧾 Buscando faturas cartão...")
                 all_bills = []
