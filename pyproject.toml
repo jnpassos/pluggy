@@ -3,20 +3,10 @@ name = "pluggy-fetcher"
 version = "0.1.0"
 description = "Pluggy Open Finance API Data Fetcher"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 dependencies = [
     "requests>=2.31.0",
     "python-dotenv>=1.0.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "ruff>=0.1.0",
-]
-
-[tool.uv]
-dev-dependencies = [
-    "ruff>=0.1.0",
 ]
 
 [tool.ruff]
@@ -28,3 +18,8 @@ ignore = []
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.2",
+]

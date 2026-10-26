@@ -1,18 +1,22 @@
 [
   {
-    "item_id": "2f5330c9-afbc-4241-9715-bbc936666222",
-    "name": "Nubank"
+    "name": "Banco Inter",
+    "short_name": "banco_inter",
+    "item_id": "523b8a02-a3c8-4ac0-b9dc-7a89edf06f90"
   },
   {
-    "item_id": "758f2c27-7a63-4b38-8638-b338c5b333c0",
-    "name": "Itaú"
+    "name": "Itaú",
+    "short_name": "itau",
+    "item_id": "758f2c27-7a63-4b38-8638-b338c5b333c0"
   },
   {
-    "item_id": "a1f93bea-0789-47eb-92c1-ec2d2d768b96",
-    "name": "Santander"
+    "name": "Nubank",
+    "short_name": "nubank",
+    "item_id": "2f5330c9-afbc-4241-9715-bbc936666222"
   },
   {
-    "item_id": "523b8a02-a3c8-4ac0-b9dc-7a89edf06f90",
-    "name": "Banco Inter"
+    "name": "Santander",
+    "short_name": "santander",
+    "item_id": "a1f93bea-0789-47eb-92c1-ec2d2d768b96"
   }
 ]
