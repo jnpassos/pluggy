@@ -1,6 +1,0 @@
-usage: pluggy_fetch.py [-h] [--item-id ITEM_ID] [--item-name ITEM_NAME]
-                       [--from-date FROM_DATE] [--to-date TO_DATE]
-                       [--type {CREDIT,DEBIT,PIX,TED,DOC,BOLETO}]
-                       [--only {connectors,items,accounts,transactions,all}]
-                       [--output OUTPUT] [--quiet] [--all-transactions]
-pluggy_fetch.py: error: argument --only: invalid choice: 'connectors,accounts,transactions,investments,loans' (choose from 'connectors', 'items', 'accounts', 'transactions', 'all')
