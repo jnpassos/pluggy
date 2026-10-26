@@ -443,13 +443,38 @@ def main():
             if args.only in ("transactions", "all"):
                 if not args.quiet:
                     print(f"\n💳 Buscando transações do item {target_item_id}...")
-                transactions = client.fetch_transactions(
-                    target_item_id,
-                    from_date=args.from_date,
-                    to_date=args.to_date,
-                    transaction_type=args.type,
-                )
-                all_data["transactions"] = transactions
+                # Busca contas primeiro para usar API v2
+                accounts = client.fetch_accounts(target_item_id)
+                all_transactions = []
+                for account in accounts:
+                    account_id = account.get("id")
+                    account_name = account.get("name", "Unknown")
+                    if not args.quiet:
+                        print(f"  💳 Buscando transações: {account_name} ({account_id})")
+                    try:
+                        transactions = client.fetch_transactions_v2(
+                            account_id,
+                            from_date=args.from_date,
+                            to_date=args.to_date,
+                            transaction_type=args.type,
+                        )
+                    except requests.HTTPError as e:
+                        if not args.quiet:
+                            print(f"    ⚠️  Erro HTTP {e.response.status_code}")
+                        continue
+                    except (requests.RequestException, ValueError, KeyError, OSError) as e:
+                        if not args.quiet:
+                            print(f"    ⚠️  Erro: {e}")
+                        continue
+                    
+                    # Adiciona metadados às transações
+                    for tx in transactions:
+                        tx["_account_id"] = account_id
+                        tx["_account_name"] = account_name
+                    
+                    all_transactions.extend(transactions)
+                
+                all_data["transactions"] = all_transactions
                 if not args.quiet:
                     print_summary(
                         "Transações",
