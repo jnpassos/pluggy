@@ -255,8 +255,8 @@ class PluggyClient:
         return self._get_all_pages("/loans", {"itemId": item_id})
 
     # ===== FATURAS CARTÃO =====
-    def fetch_bills(self, item_id: str) -> list:
-        return self._get_all_pages("/bills", {"itemId": item_id})
+    def fetch_bills(self, account_id: str) -> list:
+        return self._get_all_pages("/bills", {"accountId": account_id})
 
 
 def print_json(data, indent=2):
@@ -524,12 +524,27 @@ def main():
             if args.only == "all":
                 if not args.quiet:
                     print("\n🧾 Buscando faturas cartão...")
-                bills = client.fetch_bills(target_item_id)
-                all_data["bills"] = bills
+                # Busca faturas para cada conta de crédito
+                all_bills = []
+                for account in all_data.get("accounts", []):
+                    if account.get("type") in ("CREDIT_CARD", "CREDIT"):
+                        account_id = account.get("id")
+                        if not args.quiet:
+                            print(f"  💳 Buscando faturas: {account.get('name')} ({account_id})")
+                        try:
+                            bills = client.fetch_bills(account_id)
+                            all_bills.extend(bills)
+                        except requests.HTTPError as e:
+                            if not args.quiet:
+                                print(f"    ⚠️  Erro HTTP {e.response.status_code}")
+                        except (requests.RequestException, ValueError, KeyError, OSError) as e:
+                            if not args.quiet:
+                                print(f"    ⚠️  Erro: {e}")
+                all_data["bills"] = all_bills
                 if not args.quiet:
                     print_summary(
                         "Faturas",
-                        bills,
+                        all_bills,
                         ["id", "accountId", "totalAmount", "currency", "dueDate", "status"],
                     )
 

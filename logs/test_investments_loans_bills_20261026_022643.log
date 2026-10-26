@@ -1,0 +1,26 @@
+=== INVESTIMENTOS ===
+Total: 7
+  - CDB - NU FINANCEIRA S.A. - SOCIEDADE DE CREDITO, FINANCIAMENTO E INVESTIMENTO: 0 None
+  - CDB - NU FINANCEIRA S.A. - SOCIEDADE DE CREDITO, FINANCIAMENTO E INVESTIMENTO: 0 None
+  - CDB - NU FINANCEIRA S.A. - SOCIEDADE DE CREDITO, FINANCIAMENTO E INVESTIMENTO: 0 None
+  - CDB - NU FINANCEIRA S.A. - SOCIEDADE DE CREDITO, FINANCIAMENTO E INVESTIMENTO: 0 None
+  - CDB - NU FINANCEIRA S.A. - SOCIEDADE DE CREDITO, FINANCIAMENTO E INVESTIMENTO: 0 None
+
+=== EMPRÉSTIMOS ===
+Total: 0
+
+=== FATURAS ===
+Traceback (most recent call last):
+  File "<string>", line 22, in <module>
+    bills = client.fetch_bills(item_id)
+  File "/root/projetos/pluggy/pluggy_fetch.py", line 259, in fetch_bills
+    return self._get_all_pages("/bills", {"itemId": item_id})
+           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/projetos/pluggy/pluggy_fetch.py", line 64, in _get_all_pages
+    data = self._get(endpoint, page_params)
+  File "/root/projetos/pluggy/pluggy_fetch.py", line 51, in _get
+    resp.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/usr/local/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.pluggy.ai/bills?itemId=2f5330c9-afbc-4241-9715-bbc936666222&page=1&pageSize=500

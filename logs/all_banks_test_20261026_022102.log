@@ -1,0 +1,28 @@
+
+🌍 Buscando transações de TODOS os bancos (items.json)...
+
+🏦 Buscando contas do banco inter (523b8a02-a3c8-4ac0-b9dc-7a89edf06f90)...
+  💳 Buscando transações: BANCO INTER (900d5ce3-0ba5-4337-bcc0-4b2bc02b6614)
+  💳 Buscando transações: BANCO INTER (4a78c85f-c7e7-4855-8ecd-30980bee6275)
+  💳 Buscando transações: GOLD (d90aca2e-1c0d-4b4e-baf0-f766e48516c1)
+
+🏦 Buscando contas do itaú (758f2c27-7a63-4b38-8638-b338c5b333c0)...
+  💳 Buscando transações: itau (cbe8b01c-d08a-42f5-955f-4e4956d33f0b)
+  💳 Buscando transações: Itaú Click Múltiplo MC Plat (ca4ac3d7-2264-4860-86b8-ef4357f16a56)
+
+🏦 Buscando contas do nubank (2f5330c9-afbc-4241-9715-bbc936666222)...
+  💳 Buscando transações: Nu Pagamentos S.A. - Instituição de Pagamento (4dbbf4c6-9150-42d2-aba0-7b16d2d22863)
+  💳 Buscando transações: platinum (a866d562-9af7-4eac-a8ce-635f4e81ced6)
+
+🏦 Buscando contas do santander (a1f93bea-0789-47eb-92c1-ec2d2d768b96)...
+  💳 Buscando transações: Banco Santander Pessoa Física (e7f3d03d-8749-4731-8977-2f223e89711a)
+  💳 Buscando transações: FREE VISA                      (deeaa6db-f03f-45d1-8cf4-f77f8d2e8b9b)
+  💳 Buscando transações: FREE VISA                      (36cc5591-7ec3-4f08-b7c4-96bb6c54149c)
+
+✅ Total: 92 transações de 4 bancos
+  banco inter: 2 txs | Créditos: 1829.00 | Débitos: -1829.00 | Líquido: 0.00
+  itaú: 6 txs | Créditos: 1885.81 | Débitos: -1928.62 | Líquido: -42.81
+  nubank: 83 txs | Créditos: 2599.71 | Débitos: -2580.13 | Líquido: 19.58
+  santander: 1 txs | Créditos: 0.13 | Débitos: 0.00 | Líquido: 0.13
+
+✅ Concluído!

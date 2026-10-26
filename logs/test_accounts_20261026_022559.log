@@ -1,0 +1,16 @@
+📌 Item resolvido: Nubank -> 2f5330c9-afbc-4241-9715-bbc936666222
+
+🏦 Buscando contas do item 2f5330c9-afbc-4241-9715-bbc936666222...
+
+============================================================
+Contas: 2 itens
+============================================================
+  - id=4dbbf4c6-9150-42d2-aba0-7b16d2d22863 | name=Nu Pagamentos S.A. - Instituição de Pagamento | type=BANK | subtype=CHECKING_ACCOUNT | balance=72 | currency=N/A
+  - id=a866d562-9af7-4eac-a8ce-635f4e81ced6 | name=platinum | type=CREDIT | subtype=CREDIT_CARD | balance=732.98 | currency=N/A
+
+============================================================
+Cartões de Crédito: 1 itens
+============================================================
+  - id=a866d562-9af7-4eac-a8ce-635f4e81ced6 | name=platinum | balance=732.98 | currency=N/A | creditLimit=N/A
+
+✅ Concluído!
