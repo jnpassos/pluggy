@@ -106,7 +106,7 @@ class PluggyClient:
         to_date: str | None = None,
         transaction_type: str | None = None,
     ) -> list:
-        """Busca transações de um item com filtros opcionais."""
+        """Busca transações de um item com filtros opcionais (API v1 - deprecated)."""
         params = {"itemId": item_id}
         if from_date:
             params["from"] = from_date
@@ -118,6 +118,133 @@ class PluggyClient:
 
     def fetch_transaction(self, transaction_id: str) -> dict:
         return self._get(f"/transactions/{transaction_id}")
+
+    def fetch_transactions_v2(
+        self,
+        account_id: str,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        transaction_type: str | None = None,
+        page_size: int = 500,
+    ) -> list:
+        """Busca transações via API v2 (cursor pagination) para uma conta específica.
+
+        Note: API v2 não suporta filtros de data (from/to) nem type -
+        filtra client-side se necessário.
+        O campo 'next' retorna uma query string completa
+        (ex: ?accountId=...&after=...).
+        """
+        all_results = []
+        next_url = None
+
+        while True:
+            if next_url:
+                # next_url já contém a query string completa
+                url = f"{self.config.base_url}/v2/transactions{next_url}"
+                resp = self.session.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+            else:
+                params = {"accountId": account_id}
+                data = self._get("/v2/transactions", params)
+
+            results = data.get("results", [])
+            all_results.extend(results)
+
+            # Check for next cursor (vem como query string: ?accountId=...&after=...)
+            next_url = data.get("next")
+            if not next_url:
+                break
+
+        # Filtro client-side para datas e tipo se necessário
+        if from_date or to_date or transaction_type:
+            filtered = []
+            for tx in all_results:
+                tx_date = tx.get("date", "")[:10]  # YYYY-MM-DD
+                if from_date and tx_date < from_date:
+                    continue
+                if to_date and tx_date > to_date:
+                    continue
+                if transaction_type:
+                    tx_type = tx.get("type", "")
+                    if tx_type != transaction_type:
+                        continue
+                filtered.append(tx)
+            return filtered
+
+        return all_results
+
+    def fetch_all_transactions_all_items(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        transaction_type: str | None = None,
+        quiet: bool = False,
+    ) -> dict:
+        """Busca transações de TODOS os itens (bancos) em items.json."""
+        # Carrega items.json
+        items_map = load_items_map()
+
+        all_transactions = []
+        all_accounts = {}
+        successful_banks = 0
+
+        for name, item_id in items_map.items():
+            if not quiet:
+                print(f"\n🏦 Buscando contas do {name} ({item_id})...")
+
+            try:
+                # Busca contas do item
+                accounts = self.fetch_accounts(item_id)
+                all_accounts[name] = accounts
+            except requests.HTTPError as e:
+                if not quiet:
+                    print(f"  ⚠️  Erro ao buscar contas: HTTP {e.response.status_code}")
+                continue
+            except (requests.RequestException, ValueError, KeyError, OSError) as e:
+                if not quiet:
+                    print(f"  ⚠️  Erro ao buscar contas: {e}")
+                continue
+
+            # Para cada conta, busca transações
+            for account in accounts:
+                account_id = account.get("id")
+                account_name = account.get("name", "Unknown")
+                if not quiet:
+                    print(f"  💳 Buscando transações: {account_name} ({account_id})")
+
+                try:
+                    transactions = self.fetch_transactions_v2(
+                        account_id,
+                        from_date=from_date,
+                        to_date=to_date,
+                        transaction_type=transaction_type,
+                    )
+                except requests.HTTPError as e:
+                    if not quiet:
+                        print(f"    ⚠️  Erro HTTP {e.response.status_code}")
+                    continue
+                except (requests.RequestException, ValueError, KeyError, OSError) as e:
+                    if not quiet:
+                        print(f"    ⚠️  Erro: {e}")
+                    continue
+
+                # Adiciona metadados às transações
+                for tx in transactions:
+                    tx["_bank_name"] = name
+                    tx["_account_id"] = account_id
+                    tx["_account_name"] = account_name
+
+                all_transactions.extend(transactions)
+
+            successful_banks += 1
+
+        return {
+            "transactions": all_transactions,
+            "accounts_by_bank": all_accounts,
+            "total_transactions": len(all_transactions),
+            "total_banks": successful_banks,
+        }
 
     # ===== INVESTIMENTOS =====
     def fetch_investments(self, item_id: str) -> list:
@@ -189,6 +316,11 @@ def main():
     )
     parser.add_argument("--output", help="Arquivo JSON de saída")
     parser.add_argument("--quiet", "-q", action="store_true", help="Menos output")
+    parser.add_argument(
+        "--all-transactions",
+        action="store_true",
+        help="Busca transações de TODOS os bancos em items.json (usa API v2)",
+    )
     args = parser.parse_args()
 
     # Carrega mapeamento de nomes
@@ -215,6 +347,42 @@ def main():
 
     client = PluggyClient(config)
     all_data = {}
+
+    # Handle --all-transactions FIRST (doesn't need target_item_id)
+    if args.all_transactions:
+        if not args.quiet:
+            print("\n🌍 Buscando transações de TODOS os bancos (items.json)...")
+        result = client.fetch_all_transactions_all_items(
+            from_date=args.from_date,
+            to_date=args.to_date,
+            transaction_type=args.type,
+        )
+        all_data["transactions_all"] = result
+        if not args.quiet:
+            total_tx = result["total_transactions"]
+            total_banks = result["total_banks"]
+            print(f"\n✅ Total: {total_tx} transações de {total_banks} bancos")
+            # Summary by bank
+            for bank_name, accounts in result["accounts_by_bank"].items():
+                bank_txs = [t for t in result["transactions"] if t.get("_bank_name") == bank_name]
+                total_credit = sum(t.get("amount", 0) for t in bank_txs if t.get("amount", 0) > 0)
+                total_debit = sum(t.get("amount", 0) for t in bank_txs if t.get("amount", 0) < 0)
+                net = total_credit + total_debit
+                print(
+                    f"  {bank_name}: {len(bank_txs)} txs | "
+                    f"Créditos: {total_credit:.2f} | Débitos: {total_debit:.2f} | "
+                    f"Líquido: {net:.2f}"
+                )
+
+        # Save and exit
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(all_data, f, indent=2, ensure_ascii=False, default=str)
+            if not args.quiet:
+                print(f"\n💾 Dados salvos em: {args.output}")
+        if not args.quiet:
+            print("\n✅ Concluído!")
+        sys.exit(0)
 
     try:
         # 1. CONECTORES / BANCOS
