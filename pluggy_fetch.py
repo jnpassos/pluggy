@@ -423,6 +423,46 @@ def print_json(data, indent=2):
     print(json.dumps(data, indent=indent, ensure_ascii=False, default=str))
 
 
+def print_table(data: list, columns: list | None = None, max_rows: int | None = None):
+    """Imprime lista de dicts em formato tabular."""
+    if not data:
+        print("  (vazio)")
+        return
+
+    # Determina colunas: usa keys do primeiro item se não especificado
+    if columns is None:
+        columns = list(data[0].keys()) if data else []
+
+    # Limita linhas
+    rows = data[:max_rows] if max_rows else data
+
+    # Calcula largura de cada coluna
+    col_widths = {}
+    for col in columns:
+        max_len = len(col)
+        for row in rows:
+            val = str(row.get(col, ""))
+            max_len = max(max_len, len(val))
+        col_widths[col] = min(max_len, 50)  # teto de 50 chars
+
+    # Header
+    header = " | ".join(f"{col:<{col_widths[col]}}" for col in columns)
+    sep = "-+-".join("-" * col_widths[col] for col in columns)
+    print(f"  {header}")
+    print(f"  {sep}")
+
+    # Dados
+    for row in rows:
+        line = " | ".join(
+            f"{str(row.get(col, ''))[:col_widths[col]]:<{col_widths[col]}}"
+            for col in columns
+        )
+        print(f"  {line}")
+
+    if max_rows and len(data) > max_rows:
+        print(f"  ... e mais {len(data) - max_rows} linhas")
+
+
 def print_summary(label: str, data: list, key_fields: list | None = None):
     print(f"\n{'=' * 60}")
     print(f"{label}: {len(data)} itens")
@@ -587,6 +627,10 @@ def main():
                     f"Créditos: {total_credit:.2f} | Débitos: {total_debit:.2f} | "
                     f"Líquido: {net:.2f}"
                 )
+            print_table(
+                result["transactions"],
+                columns=["id", "description", "amount", "currency", "date", "type", "_bank_name"],
+            )
 
         if args.output:
             write_output(all_data, args.output, args.format)
@@ -607,6 +651,7 @@ def main():
             all_data["connectors"] = connectors
             if not args.quiet:
                 print_summary("Conectores", connectors, ["id", "name", "type", "country"])
+                print_table(connectors, columns=["id", "name", "type", "country"])
 
         # 2. ITENS - só busca se NÃO temos item_id explícito
         if args.only in ("items", "all") and not args.item_id:
@@ -617,6 +662,7 @@ def main():
                 all_data["items"] = items
                 if not args.quiet:
                     print_summary("Itens", items, ["id", "name", "connectorId", "status", "updatedAt"])
+                    print_table(items, columns=["id", "name", "connectorId", "status", "updatedAt"])
             except requests.HTTPError as e:
                 if e.response.status_code == 401 and args.item_name:
                     # Esperado para contas pessoais - já temos item_id via items.json
@@ -643,6 +689,9 @@ def main():
                     print_summary(
                         "Contas", accounts, ["id", "name", "type", "subtype", "balance", "currency"]
                     )
+                    print_table(
+                        accounts, columns=["id", "name", "type", "subtype", "balance", "currency"]
+                    )
 
             credit_accounts = [
                 a for a in all_data.get("accounts", []) if a.get("type") in ("CREDIT_CARD", "CREDIT")
@@ -654,6 +703,9 @@ def main():
                     "Cartões de Crédito",
                     credit_accounts,
                     ["id", "name", "balance", "currency", "creditLimit"],
+                )
+                print_table(
+                    credit_accounts, columns=["id", "name", "balance", "currency", "creditLimit"]
                 )
 
             # 4. TRANSAÇÕES
@@ -696,6 +748,10 @@ def main():
                         all_transactions,
                         ["id", "description", "amount", "currency", "date", "type"],
                     )
+                    print_table(
+                        all_transactions,
+                        columns=["id", "description", "amount", "currency", "date", "type"],
+                    )
 
                 if all_transactions and not args.quiet:
                     total_credit = sum(t.get("amount", 0) for t in all_transactions if t.get("amount", 0) > 0)
@@ -716,6 +772,10 @@ def main():
                     print_summary(
                         "Investimentos", investments, ["id", "name", "type", "amount", "currency"]
                     )
+                    print_table(
+                        investments,
+                        columns=["id", "name", "type", "amount", "currency"],
+                    )
 
             # 6. EMPRÉSTIMOS
             if args.only in ("loans", "all"):
@@ -728,6 +788,10 @@ def main():
                         "Empréstimos",
                         loans,
                         ["id", "name", "type", "outstandingBalance", "currency"],
+                    )
+                    print_table(
+                        loans,
+                        columns=["id", "name", "type", "outstandingBalance", "currency"],
                     )
 
             # 7. FATURAS CARTÃO
@@ -755,6 +819,10 @@ def main():
                         "Faturas",
                         all_bills,
                         ["id", "accountId", "totalAmount", "currency", "dueDate", "status"],
+                    )
+                    print_table(
+                        all_bills,
+                        columns=["id", "accountId", "totalAmount", "currency", "dueDate", "status"],
                     )
 
     except requests.HTTPError as e:
