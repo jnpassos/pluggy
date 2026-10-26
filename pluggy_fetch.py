@@ -5,10 +5,14 @@ Todas as credenciais via variáveis de ambiente (.env ou export).
 """
 
 import argparse
+import csv
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import requests
 from dotenv import load_dotenv
@@ -19,6 +23,9 @@ class Config:
     api_key: str
     base_url: str = "https://api.pluggy.ai"
     timeout: int = 30
+    max_retries: int = 3
+    backoff_factor: float = 1.0
+    cache_dir: str = ".cache"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -32,27 +39,159 @@ class Config:
         return cls(api_key=api_key)
 
 
+class TokenManager:
+    """Gerencia token JWT com renovação automática antes da expiração."""
+
+    def __init__(self, client_id: str, client_secret: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self._api_key: str | None = None
+        self._expires_at: float = 0
+
+    def get_api_key(self) -> str:
+        """Retorna API key válida, renovando se necessário (5 min antes)."""
+        buffer = 5 * 60  # 5 minutos
+        if not self._api_key or time.time() > self._expires_at - buffer:
+            self._refresh_token()
+        return self._api_key
+
+    def _refresh_token(self) -> None:
+        """Renova token via endpoint /auth."""
+        resp = requests.post(
+            "https://api.pluggy.ai/auth",
+            json={"clientId": self.client_id, "clientSecret": self.client_secret},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        self._api_key = data["apiKey"]
+        # JWT expira em 2h = 7200s
+        self._expires_at = time.time() + 7200
+
+
+class CacheManager:
+    """Cache simples em arquivo para conectores e contas."""
+
+    def __init__(self, cache_dir: str = ".cache"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+
+    def _cache_path(self, key: str) -> Path:
+        safe_key = key.replace("/", "_").replace(":", "_")
+        return self.cache_dir / f"{safe_key}.json"
+
+    def get(self, key: str, max_age_seconds: int = 3600) -> Any | None:
+        """Retorna valor do cache se não expirado."""
+        path = self._cache_path(key)
+        if not path.exists():
+            return None
+        try:
+            stat = path.stat()
+            if time.time() - stat.st_mtime > max_age_seconds:
+                return None
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def set(self, key: str, value: Any) -> None:
+        """Salva valor no cache."""
+        path = self._cache_path(key)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(value, f, ensure_ascii=False, default=str)
+        except OSError:
+            pass  # Falha silenciosa no cache
+
+
 class PluggyClient:
     def __init__(self, config: Config):
         self.config = config
+        self.token_manager = TokenManager(
+            os.getenv("PLUGGY_CLIENT_ID", ""),
+            os.getenv("PLUGGY_CLIENT_SECRET", ""),
+        )
+        self.cache = CacheManager(config.cache_dir)
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "X-API-KEY": config.api_key,
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             }
         )
         self.session.timeout = config.timeout
 
-    def _get(self, endpoint: str, params: dict | None = None) -> dict:
+    def _get_headers(self) -> dict:
+        """Retorna headers com API key atualizada."""
+        return {"X-API-KEY": self.token_manager.get_api_key()}
+
+    def _request_with_retry(
+        self, method: str, url: str, params: dict | None = None, **kwargs
+    ) -> requests.Response:
+        """Faz requisição com retry exponencial para 429 e 5xx."""
+        last_exception = None
+
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                headers = {**self._get_headers(), **kwargs.pop("headers", {})}
+                resp = self.session.request(
+                    method, url, params=params, headers=headers, **kwargs
+                )
+
+                # Sucesso
+                if resp.status_code < 400:
+                    return resp
+
+                # Rate limit (429) - respeita Retry-After
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("Retry-After", "1"))
+                    if attempt < self.config.max_retries:
+                        wait = retry_after * (2**attempt) * self.config.backoff_factor
+                        time.sleep(wait)
+                        continue
+
+                # Server errors (5xx) - retry com backoff
+                if 500 <= resp.status_code < 600:
+                    if attempt < self.config.max_retries:
+                        wait = self.config.backoff_factor * (2**attempt)
+                        time.sleep(wait)
+                        continue
+
+                # Outros erros HTTP - não faz retry
+                resp.raise_for_status()
+
+            except requests.RequestException as e:
+                last_exception = e
+                if attempt < self.config.max_retries:
+                    wait = self.config.backoff_factor * (2**attempt)
+                    time.sleep(wait)
+                    continue
+                raise
+
+        if last_exception:
+            raise last_exception
+        raise requests.RequestException("Max retries exceeded")
+
+    def _get(self, endpoint: str, params: dict | None = None, use_cache: bool = False, cache_ttl: int = 3600) -> dict:
+        """GET com cache opcional e retry."""
+        cache_key = f"GET_{endpoint}_{json.dumps(params, sort_keys=True)}"
+
+        if use_cache:
+            cached = self.cache.get(cache_key, cache_ttl)
+            if cached is not None:
+                return cached
+
         url = f"{self.config.base_url}{endpoint}"
-        resp = self.session.get(url, params=params)
-        resp.raise_for_status()
-        return resp.json()
+        resp = self._request_with_retry("GET", url, params=params)
+        data = resp.json()
+
+        if use_cache:
+            self.cache.set(cache_key, data)
+
+        return data
 
     def _get_all_pages(
-        self, endpoint: str, params: dict | None = None, page_size: int = 500
+        self, endpoint: str, params: dict | None = None, page_size: int = 500, use_cache: bool = False
     ) -> list:
         """Busca todos os resultados paginados."""
         all_results = []
@@ -61,7 +200,7 @@ class PluggyClient:
 
         while True:
             page_params = {**params, "page": page, "pageSize": page_size}
-            data = self._get(endpoint, page_params)
+            data = self._get(endpoint, page_params, use_cache=use_cache)
             results = data.get("results", [])
             all_results.extend(results)
 
@@ -72,10 +211,9 @@ class PluggyClient:
         return all_results
 
     # ===== CONECTORES / BANCOS =====
-    def fetch_connectors(self) -> list:
+    def fetch_connectors(self, use_cache: bool = True) -> list:
         """Lista todos os conectores/bancos disponíveis."""
-        # /connectors pode retornar lista direta ou paginado
-        data = self._get("/connectors")
+        data = self._get("/connectors", use_cache=use_cache, cache_ttl=86400)  # 24h cache
         if isinstance(data, dict) and "results" in data:
             return data["results"]
         return data if isinstance(data, list) else []
@@ -90,9 +228,9 @@ class PluggyClient:
         return self._get(f"/items/{item_id}")
 
     # ===== CONTAS =====
-    def fetch_accounts(self, item_id: str) -> list:
+    def fetch_accounts(self, item_id: str, use_cache: bool = True) -> list:
         """Lista contas de um item."""
-        return self._get_all_pages("/accounts", {"itemId": item_id})
+        return self._get_all_pages("/accounts", {"itemId": item_id}, use_cache=use_cache)
 
     def fetch_account(self, account_id: str) -> dict:
         """Busca detalhes de uma conta específica."""
@@ -139,10 +277,8 @@ class PluggyClient:
 
         while True:
             if next_url:
-                # next_url já contém a query string completa
                 url = f"{self.config.base_url}/v2/transactions{next_url}"
-                resp = self.session.get(url)
-                resp.raise_for_status()
+                resp = self._request_with_retry("GET", url)
                 data = resp.json()
             else:
                 params = {"accountId": account_id}
@@ -151,7 +287,6 @@ class PluggyClient:
             results = data.get("results", [])
             all_results.extend(results)
 
-            # Check for next cursor (vem como query string: ?accountId=...&after=...)
             next_url = data.get("next")
             if not next_url:
                 break
@@ -182,7 +317,6 @@ class PluggyClient:
         quiet: bool = False,
     ) -> dict:
         """Busca transações de TODOS os itens (bancos) em items.json."""
-        # Carrega items.json
         items_map = load_items_map()
 
         all_transactions = []
@@ -194,7 +328,6 @@ class PluggyClient:
                 print(f"\n🏦 Buscando contas do {name} ({item_id})...")
 
             try:
-                # Busca contas do item
                 accounts = self.fetch_accounts(item_id)
                 all_accounts[name] = accounts
             except requests.HTTPError as e:
@@ -206,7 +339,6 @@ class PluggyClient:
                     print(f"  ⚠️  Erro ao buscar contas: {e}")
                 continue
 
-            # Para cada conta, busca transações
             for account in accounts:
                 account_id = account.get("id")
                 account_name = account.get("name", "Unknown")
@@ -229,7 +361,6 @@ class PluggyClient:
                         print(f"    ⚠️  Erro: {e}")
                     continue
 
-                # Adiciona metadados às transações
                 for tx in transactions:
                     tx["_bank_name"] = name
                     tx["_account_id"] = account_id
@@ -272,7 +403,7 @@ def print_summary(label: str, data: list, key_fields: list | None = None):
         return
 
     if key_fields:
-        for item in data[:10]:  # mostra só primeiros 10
+        for item in data[:10]:
             parts = [f"{k}={item.get(k, 'N/A')}" for k in key_fields]
             print(f"  - {' | '.join(parts)}")
         if len(data) > 10:
@@ -281,6 +412,42 @@ def print_summary(label: str, data: list, key_fields: list | None = None):
         print_json(data[:3])
         if len(data) > 3:
             print(f"  ... (total: {len(data)})")
+
+
+def write_output(data: dict, output_file: str, format: str = "json"):
+    """Escreve saída em JSON, CSV ou Parquet."""
+    if format == "json":
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+    elif format == "csv":
+        # Flatten para CSV - usa transações se disponível
+        transactions = data.get("transactions") or data.get("transactions_all", {}).get("transactions", [])
+        if transactions:
+            with open(output_file, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=transactions[0].keys())
+                writer.writeheader()
+                writer.writerows(transactions)
+        else:
+            # Fallback: JSON
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+    elif format == "parquet":
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+
+            transactions = data.get("transactions") or data.get("transactions_all", {}).get("transactions", [])
+            if transactions:
+                table = pa.Table.from_pylist(transactions)
+                pq.write_table(table, output_file)
+            else:
+                # Fallback
+                with open(output_file.replace(".parquet", ".json"), "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+        except ImportError:
+            print("⚠️  pyarrow não instalado. Salvando como JSON.")
+            with open(output_file.replace(".parquet", ".json"), "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
 
 
 def load_items_map(items_file: str = "items.json") -> dict:
@@ -314,19 +481,28 @@ def main():
         default="all",
         help="O que buscar",
     )
-    parser.add_argument("--output", help="Arquivo JSON de saída")
+    parser.add_argument("--output", help="Arquivo de saída")
+    parser.add_argument(
+        "--format",
+        choices=["json", "csv", "parquet"],
+        default="json",
+        help="Formato do arquivo de saída (padrão: json)",
+    )
     parser.add_argument("--quiet", "-q", action="store_true", help="Menos output")
     parser.add_argument(
         "--all-transactions",
         action="store_true",
         help="Busca transações de TODOS os bancos em items.json (usa API v2)",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Desabilita cache de conectores/contas",
+    )
     args = parser.parse_args()
 
-    # Carrega mapeamento de nomes
     items_map = load_items_map()
 
-    # Resolve --item-name para item_id
     if args.item_name:
         name_lower = args.item_name.lower()
         if name_lower in items_map:
@@ -348,7 +524,6 @@ def main():
     client = PluggyClient(config)
     all_data = {}
 
-    # Handle --all-transactions FIRST (doesn't need target_item_id)
     if args.all_transactions:
         if not args.quiet:
             print("\n🌍 Buscando transações de TODOS os bancos (items.json)...")
@@ -362,7 +537,6 @@ def main():
             total_tx = result["total_transactions"]
             total_banks = result["total_banks"]
             print(f"\n✅ Total: {total_tx} transações de {total_banks} bancos")
-            # Summary by bank
             for bank_name, accounts in result["accounts_by_bank"].items():
                 bank_txs = [t for t in result["transactions"] if t.get("_bank_name") == bank_name]
                 total_credit = sum(t.get("amount", 0) for t in bank_txs if t.get("amount", 0) > 0)
@@ -374,22 +548,22 @@ def main():
                     f"Líquido: {net:.2f}"
                 )
 
-        # Save and exit
         if args.output:
-            with open(args.output, "w", encoding="utf-8") as f:
-                json.dump(all_data, f, indent=2, ensure_ascii=False, default=str)
+            write_output(all_data, args.output, args.format)
             if not args.quiet:
-                print(f"\n💾 Dados salvos em: {args.output}")
+                print(f"\n💾 Dados salvos em: {args.output} ({args.format})")
         if not args.quiet:
             print("\n✅ Concluído!")
         sys.exit(0)
 
     try:
+        use_cache = not args.no_cache
+
         # 1. CONECTORES / BANCOS
         if args.only in ("connectors", "all"):
             if not args.quiet:
                 print("\n🔌 Buscando conectores/bancos...")
-            connectors = client.fetch_connectors()
+            connectors = client.fetch_connectors(use_cache=use_cache)
             all_data["connectors"] = connectors
             if not args.quiet:
                 print_summary("Conectores", connectors, ["id", "name", "type", "country"])
@@ -403,7 +577,6 @@ def main():
             if not args.quiet:
                 print_summary("Itens", items, ["id", "name", "connectorId", "status", "updatedAt"])
 
-        # Se item-id não foi passado, usa o primeiro item disponível
         target_item_id = args.item_id
         if not target_item_id and all_data.get("items"):
             target_item_id = all_data["items"][0]["id"]
@@ -415,22 +588,17 @@ def main():
             if args.only in ("accounts", "all"):
                 if not args.quiet:
                     print(f"\n🏦 Buscando contas do item {target_item_id}...")
-                accounts = client.fetch_accounts(target_item_id)
+                accounts = client.fetch_accounts(target_item_id, use_cache=use_cache)
                 all_data["accounts"] = accounts
                 if not args.quiet:
                     print_summary(
                         "Contas", accounts, ["id", "name", "type", "subtype", "balance", "currency"]
                     )
 
-            # Separar contas por tipo
             credit_accounts = [
-                a
-                for a in all_data.get("accounts", [])
-                if a.get("type") in ("CREDIT_CARD", "CREDIT")
+                a for a in all_data.get("accounts", []) if a.get("type") in ("CREDIT_CARD", "CREDIT")
             ]
-            _ = [
-                a for a in all_data.get("accounts", []) if a.get("type") in ("CHECKING", "SAVINGS")
-            ]
+            _ = [a for a in all_data.get("accounts", []) if a.get("type") in ("CHECKING", "SAVINGS")]
 
             if not args.quiet and credit_accounts:
                 print_summary(
@@ -443,8 +611,7 @@ def main():
             if args.only in ("transactions", "all"):
                 if not args.quiet:
                     print(f"\n💳 Buscando transações do item {target_item_id}...")
-                # Busca contas primeiro para usar API v2
-                accounts = client.fetch_accounts(target_item_id)
+                accounts = client.fetch_accounts(target_item_id, use_cache=use_cache)
                 all_transactions = []
                 for account in accounts:
                     account_id = account.get("id")
@@ -466,37 +633,31 @@ def main():
                         if not args.quiet:
                             print(f"    ⚠️  Erro: {e}")
                         continue
-                    
-                    # Adiciona metadados às transações
+
                     for tx in transactions:
                         tx["_account_id"] = account_id
                         tx["_account_name"] = account_name
-                    
+
                     all_transactions.extend(transactions)
-                
+
                 all_data["transactions"] = all_transactions
                 if not args.quiet:
                     print_summary(
                         "Transações",
-                        transactions,
+                        all_transactions,
                         ["id", "description", "amount", "currency", "date", "type"],
                     )
 
-                # Resumo financeiro
-                if transactions and not args.quiet:
-                    total_credit = sum(
-                        t.get("amount", 0) for t in transactions if t.get("amount", 0) > 0
-                    )
-                    total_debit = sum(
-                        t.get("amount", 0) for t in transactions if t.get("amount", 0) < 0
-                    )
+                if all_transactions and not args.quiet:
+                    total_credit = sum(t.get("amount", 0) for t in all_transactions if t.get("amount", 0) > 0)
+                    total_debit = sum(t.get("amount", 0) for t in all_transactions if t.get("amount", 0) < 0)
                     net = total_credit + total_debit
                     print(
                         f"\n💰 Resumo: Créditos: {total_credit:.2f} | "
                         f"Débitos: {total_debit:.2f} | Líquido: {net:.2f}"
                     )
 
-            # 5. INVESTIMENTOS (extra)
+            # 5. INVESTIMENTOS
             if args.only == "all":
                 if not args.quiet:
                     print("\n📈 Buscando investimentos...")
@@ -507,7 +668,7 @@ def main():
                         "Investimentos", investments, ["id", "name", "type", "amount", "currency"]
                     )
 
-            # 6. EMPRÉSTIMOS (extra)
+            # 6. EMPRÉSTIMOS
             if args.only == "all":
                 if not args.quiet:
                     print("\n🏦 Buscando empréstimos...")
@@ -520,11 +681,10 @@ def main():
                         ["id", "name", "type", "outstandingBalance", "currency"],
                     )
 
-            # 7. FATURAS CARTÃO (extra)
+            # 7. FATURAS CARTÃO
             if args.only == "all":
                 if not args.quiet:
                     print("\n🧾 Buscando faturas cartão...")
-                # Busca faturas para cada conta de crédito
                 all_bills = []
                 for account in all_data.get("accounts", []):
                     if account.get("type") in ("CREDIT_CARD", "CREDIT"):
@@ -555,12 +715,10 @@ def main():
         print(f"❌ Erro: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Salva arquivo se solicitado
     if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            json.dump(all_data, f, indent=2, ensure_ascii=False, default=str)
+        write_output(all_data, args.output, args.format)
         if not args.quiet:
-            print(f"\n💾 Dados salvos em: {args.output}")
+            print(f"\n💾 Dados salvos em: {args.output} ({args.format})")
 
     if not args.quiet:
         print("\n✅ Concluído!")
