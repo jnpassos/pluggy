@@ -380,7 +380,7 @@ time python3 pluggy_fetch.py --item-name Nubank --from-date 2026-10-01 --to-date
 
 ## Project Rules
 
-1. **Idioma padrão: Português** - Todas as respostas, docs, commits e logs em português
+1. **Idioma padrão: Português Brasileiro** - Todas as respostas, docs, commits e logs em português brasileiro
 
 ---
 
